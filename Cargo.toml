@@ -1,0 +1,37 @@
+[package]
+name = "datafusion-table-provider-flight"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arrow-array = "52.2.0"
+arrow-flight = { version = "52.2.0", features = ["flight-sql-experimental", "tls"] }
+arrow-schema = { version = "52.2.0", features = ["serde"] }
+async-trait = "0.1.81"
+base64 = "0.22.1"
+bytes = "1.7.1"
+datafusion = "41.0.0"
+datafusion-expr = "41.0.0"
+datafusion-physical-expr = "41.0.0"
+datafusion-physical-plan = "41.0.0"
+datafusion-proto = "41.0.0"
+futures = "0.3.30"
+prost = "0.12" # pinned for arrow-flight compat
+serde = { version = "1.0.208", features = ["derive"] }
+serde_json = "1.0.125"
+tokio = { version = "1.36", features = [
+    "macros",
+    "rt",
+    "sync",
+    "rt-multi-thread",
+    "parking_lot",
+    "fs",
+] }
+tonic = "0.11" # pinned for arrow-flight compat
+
+[dev-dependencies]
+tokio-stream = { version = "0.1.15", features = ["net"] }
+
+[[example]]
+name = "flight-sql"
+path = "examples/flight-sql.rs"

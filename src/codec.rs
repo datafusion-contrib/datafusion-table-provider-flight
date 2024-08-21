@@ -38,8 +38,8 @@ impl PhysicalExtensionCodec for FlightPhysicalCodec {
         _registry: &dyn FunctionRegistry,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         if inputs.is_empty() {
-            let config: FlightConfig = serde_json::from_slice(buf)
-                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+            let config: FlightConfig =
+                serde_json::from_slice(buf).map_err(|e| DataFusionError::External(Box::new(e)))?;
             Ok(Arc::from(FlightExec::from(config)))
         } else {
             Err(DataFusionError::Internal(

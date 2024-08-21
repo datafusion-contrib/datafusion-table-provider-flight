@@ -2,6 +2,9 @@
 name = "datafusion-table-provider-flight"
 version = "0.1.0"
 edition = "2021"
+description = "DataFusion table providers for Arrow Flight and Flight SQL services"
+repository = "https://github.com/datafusion-contrib/datafusion-table-provider-flight"
+license = "Apache-2.0"
 
 [dependencies]
 arrow-array = "52.2.0"

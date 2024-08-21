@@ -35,22 +35,27 @@ async fn main() -> datafusion::common::Result<()> {
         )),
     );
     let _ = ctx
-        .sql(r#"
+        .sql(
+            r#"
             CREATE EXTERNAL TABLE trip_data STORED AS FLIGHT_SQL
             LOCATION 'http://localhost:32010'
             OPTIONS (
                 'flight.sql.query' 'SELECT * FROM taxi'
             )
-        "#)
+        "#,
+        )
         .await?;
 
     let df = ctx
-        .sql(r#"
+        .sql(
+            r#"
             SELECT "VendorID", COUNT(*), SUM(passenger_count), SUM(total_amount)
             FROM trip_data
             GROUP BY "VendorID"
             ORDER BY COUNT(*) DESC
-        "#)
+        "#,
+        )
         .await?;
+    df.clone().explain(true, false)?.show().await?;
     df.show().await
 }

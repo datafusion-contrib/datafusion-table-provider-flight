@@ -19,7 +19,7 @@
 
 use std::any::Any;
 use std::error::Error;
-use std::fmt::Formatter;
+use std::fmt::{Debug, Formatter};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -27,6 +27,7 @@ use arrow_array::RecordBatch;
 use arrow_flight::error::FlightError;
 use arrow_flight::{FlightClient, FlightEndpoint, Ticket};
 use arrow_schema::SchemaRef;
+use datafusion::arrow::datatypes::ToByteSlice;
 use datafusion::common::Result;
 use datafusion::common::{project_schema, DataFusionError};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -58,15 +59,15 @@ impl FlightExec {
         projection: Option<&Vec<usize>>,
         origin: &str,
     ) -> Result<Self> {
-        let partitions: Vec<_> = metadata
+        let partitions = metadata
             .info
             .endpoint
             .iter()
             .map(|endpoint| FlightPartition::new(endpoint, origin.to_string()))
-            .map(Arc::new)
             .collect();
         let schema = project_schema(&metadata.schema, projection)?;
         let config = FlightConfig {
+            origin: origin.into(),
             schema,
             partitions,
             properties: metadata.props,
@@ -93,10 +94,8 @@ impl From<FlightConfig> for FlightExec {
         );
         let mut mm = MetadataMap::new();
         for (k, v) in config.properties.grpc_headers.iter() {
-            let key = AsciiMetadataKey::from_str(k.as_str())
-                .expect("invalid header name");
-            let value = v.parse()
-                .expect("invalid header value");
+            let key = AsciiMetadataKey::from_str(k.as_str()).expect("invalid header name");
+            let value = v.parse().expect("invalid header value");
             mm.insert(key, value);
         }
         Self {
@@ -109,22 +108,42 @@ impl From<FlightConfig> for FlightExec {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct FlightConfig {
+    origin: String,
     schema: SchemaRef,
-    partitions: Vec<Arc<FlightPartition>>,
+    partitions: Arc<[FlightPartition]>,
     properties: FlightProperties,
 }
 
 /// The minimum information required for fetching a flight stream.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct FlightPartition {
-    locations: Vec<String>,
-    ticket: Vec<u8>,
+    locations: Arc<[String]>,
+    ticket: FlightTicket,
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+struct FlightTicket(Arc<[u8]>);
+
+impl From<Option<&Ticket>> for FlightTicket {
+    fn from(ticket: Option<&Ticket>) -> Self {
+        let bytes = match ticket {
+            Some(t) => t.ticket.to_byte_slice().into(),
+            None => [].into(),
+        };
+        Self(bytes)
+    }
+}
+
+impl Debug for FlightTicket {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[..{} bytes..]", self.0.len())
+    }
 }
 
 impl FlightPartition {
     fn new(endpoint: &FlightEndpoint, fallback_location: String) -> Self {
         let locations = if endpoint.location.is_empty() {
-            vec![fallback_location]
+            [fallback_location].into()
         } else {
             endpoint
                 .location
@@ -138,25 +157,21 @@ impl FlightPartition {
                 })
                 .collect()
         };
+
         Self {
             locations,
-            ticket: endpoint
-                .ticket
-                .clone()
-                .expect("No flight ticket")
-                .ticket
-                .to_vec(),
+            ticket: endpoint.ticket.as_ref().into(),
         }
     }
 }
 
 async fn flight_stream(
-    partition: Arc<FlightPartition>,
+    partition: FlightPartition,
     schema: SchemaRef,
     grpc_headers: Arc<MetadataMap>,
 ) -> Result<SendableRecordBatchStream> {
     let mut errors: Vec<Box<dyn Error + Send + Sync>> = vec![];
-    for loc in &partition.locations {
+    for loc in partition.locations.iter() {
         match try_fetch_stream(
             loc,
             partition.ticket.clone(),
@@ -180,14 +195,13 @@ async fn flight_stream(
 
 async fn try_fetch_stream(
     source: impl Into<String>,
-    ticket: Vec<u8>,
+    ticket: FlightTicket,
     schema: SchemaRef,
     grpc_headers: Arc<MetadataMap>,
 ) -> arrow_flight::error::Result<SendableRecordBatchStream> {
-    let ticket = Ticket::new(ticket);
-    let dest =
-        Channel::from_shared(source.into()).map_err(|e| FlightError::ExternalError(Box::new(e)))?;
-    let channel = dest
+    let ticket = Ticket::new(ticket.0.to_vec());
+    let channel = Channel::from_shared(source.into())
+        .map_err(|e| FlightError::ExternalError(Box::new(e)))?
         .connect()
         .await
         .map_err(|e| FlightError::ExternalError(Box::new(e)))?;
@@ -225,8 +239,17 @@ async fn try_fetch_stream(
 impl DisplayAs for FlightExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         match t {
-            DisplayFormatType::Default => f.write_str("FlightExec"),
-            DisplayFormatType::Verbose => write!(f, "FlightExec {:?}", self.config),
+            DisplayFormatType::Default => write!(
+                f,
+                "FlightExec: origin={}, streams={}",
+                self.config.origin,
+                self.config.partitions.len()
+            ),
+            DisplayFormatType::Verbose => write!(
+                f,
+                "FlightExec: origin={}, partitions={:?}, properties={:?}",
+                self.config.origin, self.config.partitions, self.config.properties,
+            ),
         }
     }
 }
@@ -275,7 +298,7 @@ impl ExecutionPlan for FlightExec {
 
 #[cfg(test)]
 mod tests {
-    use crate::exec::{FlightConfig, FlightPartition};
+    use crate::exec::{FlightConfig, FlightPartition, FlightTicket};
     use crate::FlightProperties;
     use arrow_schema::{DataType, Field, Schema};
     use std::collections::HashMap;
@@ -287,21 +310,23 @@ mod tests {
             Arc::new(Field::new("f1", DataType::Utf8, true)),
             Arc::new(Field::new("f2", DataType::Int32, false)),
         ]));
-        let partitions = vec![
-            Arc::new(FlightPartition {
-                locations: vec!["l1".into(), "l2".into()],
-                ticket: "tichet".as_bytes().to_vec(),
-            }),
-            Arc::new(FlightPartition {
-                locations: vec!["l3".into(), "l4".into()],
-                ticket: "tichet2".as_bytes().to_vec(),
-            }),
-        ];
+        let partitions = [
+            FlightPartition {
+                locations: ["l1".into(), "l2".into()].into(),
+                ticket: FlightTicket("ticket1".as_bytes().into()),
+            },
+            FlightPartition {
+                locations: ["l3".into(), "l4".into()].into(),
+                ticket: FlightTicket("ticket2".as_bytes().into()),
+            },
+        ]
+        .into();
         let properties = FlightProperties::new(
             true,
             HashMap::from([("h1".into(), "v1".into()), ("h2".into(), "v2".into())]),
         );
         let config = FlightConfig {
+            origin: "http://localhost:50050".into(),
             schema,
             partitions,
             properties,

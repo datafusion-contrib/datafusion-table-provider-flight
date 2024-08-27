@@ -23,6 +23,7 @@ use std::fmt::{Debug, Formatter};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use crate::{FlightMetadata, FlightProperties};
 use arrow_array::RecordBatch;
 use arrow_flight::error::FlightError;
 use arrow_flight::{FlightClient, FlightEndpoint, Ticket};
@@ -40,8 +41,6 @@ use futures::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use tonic::metadata::{AsciiMetadataKey, MetadataMap};
 use tonic::transport::Channel;
-
-use crate::{FlightMetadata, FlightProperties};
 
 /// Arrow Flight physical plan that maps flight endpoints to partitions
 #[derive(Clone, Debug)]

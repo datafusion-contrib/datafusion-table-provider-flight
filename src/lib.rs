@@ -206,6 +206,8 @@ impl TryFrom<FlightInfo> for FlightMetadata {
     }
 }
 
+/// Meant to gradually encapsulate all sorts of knobs required
+/// for controlling the protocol and query execution details.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FlightProperties {
     unbounded_stream: bool,

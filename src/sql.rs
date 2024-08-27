@@ -37,13 +37,19 @@ use tonic::IntoRequest;
 
 use crate::{FlightDriver, FlightMetadata};
 
-/// Default Flight SQL driver. Requires a `flight.sql.query` to be passed as a table option.
-/// If `flight.sql.username` (and optionally `flight.sql.password`) are passed,
+pub const QUERY: &str = "flight.sql.query";
+pub const USERNAME: &str = "flight.sql.username";
+pub const PASSWORD: &str = "flight.sql.password";
+pub const HEADER_PREFIX: &str = "flight.sql.header.";
+
+/// Default Flight SQL driver. Requires a [QUERY] to be passed as a table option.
+/// If [USERNAME] (and optionally [PASSWORD]) are passed,
 /// will perform the `Handshake` using basic authentication.
-/// Any additional headers can be passed as table options using the `flight.sql.header.` prefix.
-///
-/// A [crate::FlightTableFactory] using this driver is registered
-/// with the default `SessionContext` under the name `FLIGHT_SQL`.
+/// Any additional headers for the `GetFlightInfo` call can be passed as table options
+/// using the [HEADER_PREFIX] prefix.
+/// If a token is returned by the server with the handshake response, it will be
+/// stored as a gRPC authorization header within the returned [FlightMetadata],
+/// to be sent with the subsequent `DoGet` requests.
 #[derive(Clone, Debug, Default)]
 pub struct FlightSqlDriver {}
 
@@ -56,22 +62,18 @@ impl FlightDriver for FlightSqlDriver {
     ) -> Result<FlightMetadata> {
         let mut client = FlightSqlClient::new(channel);
         let headers = options.iter().filter_map(|(key, value)| {
-            key.strip_prefix("flight.sql.header.")
+            key.strip_prefix(HEADER_PREFIX)
                 .map(|header_name| (header_name, value))
         });
         for header in headers {
             client.set_header(header.0, header.1)
         }
-        if let Some(username) = options.get("flight.sql.username") {
+        if let Some(username) = options.get(USERNAME) {
             let default_password = "".to_string();
-            let password = options
-                .get("flight.sql.password")
-                .unwrap_or(&default_password);
+            let password = options.get(PASSWORD).unwrap_or(&default_password);
             _ = client.handshake(username, password).await?;
         }
-        let info = client
-            .execute(options["flight.sql.query"].clone(), None)
-            .await?;
+        let info = client.execute(options[QUERY].clone(), None).await?;
         let mut grpc_headers = HashMap::default();
         if let Some(token) = client.token {
             grpc_headers.insert("authorization".into(), format!("Bearer {}", token));
@@ -82,6 +84,7 @@ impl FlightDriver for FlightSqlDriver {
 
 /////////////////////////////////////////////////////////////////////////
 // Shameless copy/paste from arrow-flight FlightSqlServiceClient
+// (only cherry-picked the functionality that we actually use).
 // This is only needed in order to access the bearer token received
 // during handshake, as the standard client does not expose this information.
 // The bearer token has to be passed to the clients that perform
@@ -90,7 +93,8 @@ impl FlightDriver for FlightSqlDriver {
 // to be set on all subsequent requests, including DoGet.
 //
 // TODO: remove this and switch to the official client once
-//  https://github.com/apache/arrow-rs/pull/6254 is released
+//  https://github.com/apache/arrow-rs/pull/6254 is released,
+//  and remove a bunch of cargo dependencies, like base64 or bytes
 #[derive(Debug, Clone)]
 struct FlightSqlClient {
     token: Option<String>,
@@ -101,14 +105,9 @@ struct FlightSqlClient {
 impl FlightSqlClient {
     /// Creates a new FlightSql client that connects to a server over an arbitrary tonic `Channel`
     fn new(channel: Channel) -> Self {
-        Self::new_from_inner(FlightServiceClient::new(channel))
-    }
-
-    /// Creates a new higher level client with the provided lower level client
-    fn new_from_inner(inner: FlightServiceClient<Channel>) -> Self {
         Self {
             token: None,
-            flight_client: inner,
+            flight_client: FlightServiceClient::new(channel),
             headers: HashMap::default(),
         }
     }

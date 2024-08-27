@@ -15,16 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Flight plan codecs
+//! Codec to enable running in a distributed environment
 
 use std::sync::Arc;
 
+use crate::exec::{FlightConfig, FlightExec};
 use datafusion::common::DataFusionError;
 use datafusion_expr::registry::FunctionRegistry;
 use datafusion_physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-
-use crate::exec::{FlightConfig, FlightExec};
 
 /// Physical extension codec for FlightExec
 #[derive(Clone, Debug, Default)]

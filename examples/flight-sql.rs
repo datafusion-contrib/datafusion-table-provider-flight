@@ -16,8 +16,9 @@
 // under the License.
 
 use datafusion::prelude::SessionContext;
-use datafusion_table_provider_flight::sql::FlightSqlDriver;
+use datafusion_table_provider_flight::sql::{FlightSqlDriver, QUERY};
 use datafusion_table_provider_flight::FlightTableFactory;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Prerequisites:
@@ -28,16 +29,28 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> datafusion::common::Result<()> {
     let ctx = SessionContext::new();
-    ctx.state_ref().write().table_factories_mut().insert(
-        "FLIGHT_SQL".into(),
-        Arc::new(FlightTableFactory::new(
-            Arc::new(FlightSqlDriver::default()),
-        )),
-    );
+    let flight_sql = FlightTableFactory::new(Arc::new(FlightSqlDriver::default()));
+    let table = flight_sql
+        .open_table(
+            "http://localhost:32010",
+            HashMap::from([(QUERY.into(), "SELECT * FROM taxi".into())]),
+        )
+        .await?;
+    ctx.register_table("trip_data", Arc::new(table))?;
+    ctx.sql("select * from trip_data limit 10")
+        .await?
+        .show()
+        .await?;
+
+    // The same table created using DDL
+    ctx.state_ref()
+        .write()
+        .table_factories_mut()
+        .insert("FLIGHT_SQL".into(), Arc::new(flight_sql));
     let _ = ctx
         .sql(
             r#"
-            CREATE EXTERNAL TABLE trip_data STORED AS FLIGHT_SQL
+            CREATE EXTERNAL TABLE trip_data2 STORED AS FLIGHT_SQL
             LOCATION 'http://localhost:32010'
             OPTIONS (
                 'flight.sql.query' 'SELECT * FROM taxi'
@@ -50,12 +63,12 @@ async fn main() -> datafusion::common::Result<()> {
         .sql(
             r#"
             SELECT "VendorID", COUNT(*), SUM(passenger_count), SUM(total_amount)
-            FROM trip_data
+            FROM trip_data2
             GROUP BY "VendorID"
             ORDER BY COUNT(*) DESC
         "#,
         )
         .await?;
-    df.clone().explain(true, false)?.show().await?;
+    df.clone().explain(false, false)?.show().await?;
     df.show().await
 }
